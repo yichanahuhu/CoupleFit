@@ -7,12 +7,12 @@ struct SelfCardView: View {
 
     @Environment(AppState.self) private var appState
     /// 由 HomeView 传入，用于跳到设置页；未接入时为 nil，退化成文字提示
-    @Binding var selectedTab: MainTabView.Tab?
+    @Binding var selectedTab: MainTabView.Tab
 
     @State private var showTimer = false
     @State private var editMode: RecordEditMode?
 
-    init(selectedTab: Binding<MainTabView.Tab?> = .constant(nil)) {
+    init(selectedTab: Binding<MainTabView.Tab>) {
         self._selectedTab = selectedTab
     }
 
@@ -154,7 +154,7 @@ struct SelfCardView: View {
 
 #Preview {
     ScrollView {
-        SelfCardView(selectedTab: .constant(nil))
+        SelfCardView(selectedTab: .constant(.home))
             .padding()
     }
     .background(Color(.systemGroupedBackground))

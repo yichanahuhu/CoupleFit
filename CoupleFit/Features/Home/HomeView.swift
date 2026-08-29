@@ -8,9 +8,9 @@ struct HomeView: View {
 
     @Environment(AppState.self) private var appState
     /// 由 MainTabView 注入时可直接切换到设置页；未注入时退化成文字提示
-    @Binding var selectedTab: MainTabView.Tab?
+    @Binding var selectedTab: MainTabView.Tab
 
-    init(selectedTab: Binding<MainTabView.Tab?> = .constant(nil)) {
+    init(selectedTab: Binding<MainTabView.Tab>) {
         self._selectedTab = selectedTab
     }
 
@@ -144,6 +144,6 @@ struct HomeView: View {
 }
 
 #Preview {
-    HomeView(selectedTab: .constant(nil))
+    HomeView(selectedTab: .constant(.home))
         .environment(AppState())
 }

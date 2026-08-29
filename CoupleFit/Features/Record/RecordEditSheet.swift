@@ -189,7 +189,9 @@ struct RecordEditSheet: View {
     }
 
     private var dateSection: some View {
-        Section("日期") {
+        // 注意：SwiftUI 没有 Section(标题) + content + footer 的重载，
+        // 带 header/footer 时必须用 Section { } header: { } footer: { } 的写法
+        Section {
             if mode.isDateEditable {
                 DatePicker("开始时间",
                            selection: $startTime,
@@ -198,6 +200,8 @@ struct RecordEditSheet: View {
                 LabeledContent("开始时间", value: DateHelper.timeFormatter.string(from: startTime))
             }
             LabeledContent("归属日期", value: resolvedDateString)
+        } header: {
+            Text("日期")
         } footer: {
             Text("记录归属到开始时间的本地日期（\(resolvedDateString)）。")
         }
