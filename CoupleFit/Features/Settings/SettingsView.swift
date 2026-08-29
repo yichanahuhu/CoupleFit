@@ -385,7 +385,7 @@ struct SettingsView: View {
         do {
             try await appState.saveGoal(goal)
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -405,7 +405,7 @@ struct SettingsView: View {
                 isNotificationDenied = true
                 reminderEnabled = false
                 appState.errorMessage = (error as? LocalizedError)?.errorDescription
-                    ?? (error as NSError).friendlyAuthMessage
+                    ?? ((error as? AppError)?.errorDescription ?? error.localizedDescription)
                 return
             }
         }
@@ -428,7 +428,7 @@ struct SettingsView: View {
             try await appState.unbind()
             appState.toastMessage = "已解除绑定"
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -438,7 +438,7 @@ struct SettingsView: View {
             try AuthService.shared.signOut()
             appState.reset()
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 }

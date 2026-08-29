@@ -215,16 +215,12 @@ struct PartnerCardView: View {
         }
         isReminding = true
         defer { isReminding = false }
-        do {
-            try await MessagingService.shared.remindPartner(
-                partnerUID: partnerUID,
-                senderName: appState.myProfile?.displayName ?? "你的另一半",
-                exerciseType: exerciseType
-            )
-            appState.toastMessage = "已提醒 TA 🔔"
-        } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
-        }
+        await MessagingService.shared.remindPartner(
+            partnerUID: partnerUID,
+            senderName: appState.myProfile?.displayName ?? "你的另一半",
+            exerciseType: exerciseType
+        )
+        appState.toastMessage = "已提醒 TA 🔔"
     }
 }
 

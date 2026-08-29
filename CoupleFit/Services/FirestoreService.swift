@@ -1,256 +1,212 @@
-import FirebaseFirestore
 import Foundation
 
-// MARK: - Firestore 服务
+// MARK: - 数据服务（LeanCloud REST）
 
-/// 所有 Firestore 读写集中在此。
-/// 读取默认走 `getDocument`（source 优先服务器，离线时回退缓存），
-/// 实时更新统一走 addSnapshotListener。
+/// 原 Firestore 读写统一替换为 LeanCloud REST 调用。
+/// 实时更新在 AppState 中通过轮询（refreshAll）实现，这里只提供 CRUD 与查询。
 ///
 /// 单例 + 内部无可变状态，标记为 Sendable 以便从 @MainActor 的 AppState 直接调用。
 final class FirestoreService: @unchecked Sendable {
 
     static let shared = FirestoreService()
 
-    private let db: Firestore
+    private let client = LeanCloudClient.shared
 
-    private init() {
-        db = Firestore.firestore()
-        // 离线持久化：断网时仍可读取缓存，写入会在恢复网络后自动提交
-        let settings = FirestoreSettings()
-        // sizeBytes 的参数类型是 NSNumber，Swift 的 Int 不会自动桥接，必须显式包装
-        settings.cacheSettings = PersistentCacheSettings(sizeBytes: NSNumber(value: 100 * 1024 * 1024))
-        db.settings = settings
+    private init() {}
+
+    // MARK: - 编码辅助
+
+    /// 把模型编码为字典，并剔除 objectId / createdTs 等由服务端管理的字段（创建时不需要）
+    private func fieldsForCreate<T: Encodable>(_ value: T) throws -> [String: Any] {
+        var dict = try encodeDict(value)
+        dict.removeValue(forKey: "objectId")
+        dict.removeValue(forKey: "createdTs")
+        return dict
     }
 
-    // MARK: - users
-
-    func fetchUser(_ uid: String) async throws -> UserProfile? {
-        try await db.collection(Constants.colUsers).document(uid).getDocument().data(as: UserProfile.self)
+    /// 把模型编码为字典，剔除 objectId（更新时 objectId 在 URL 中，不在 body）
+    private func fieldsForUpdate<T: Encodable>(_ value: T) throws -> [String: Any] {
+        var dict = try encodeDict(value)
+        dict.removeValue(forKey: "objectId")
+        return dict
     }
 
-    func createUser(_ profile: UserProfile) async throws {
-        guard let uid = profile.id else { throw AppError.notSignedIn }
-        try db.collection(Constants.colUsers).document(uid).setData(from: profile)
+    private func encodeDict<T: Encodable>(_ value: T) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AppError.unknown("数据编码失败")
+        }
+        return dict
     }
 
-    /// 局部更新，避免覆盖 partnerId 等并发字段
-    func updateUserFields(uid: String, fields: [String: Any]) async throws {
-        try await db.collection(Constants.colUsers).document(uid).updateData(fields)
+    // MARK: - UserProfile
+
+    /// 按 ownerId 查业务资料
+    func fetchUser(ownerId: String) async throws -> UserProfile? {
+        let query = [LeanCloudClient.whereItem(["ownerId": ownerId])]
+        let results = try await client.getResults(className: Constants.colUsers, query: query)
+        guard let first = results.first else { return nil }
+        return try client.decode(first, as: UserProfile.self)
     }
 
-    /// 追加快照 token。同一账号可能在多台设备登录（如 iPhone + iPad），
-    /// 所以用 arrayUnion 累加而非覆盖，避免后登录的设备顶掉先登录的。
-    func addFCMToken(uid: String, token: String) async throws {
-        try await updateUserFields(uid: uid, fields: ["fcmTokens": FieldValue.arrayUnion([token])])
+    /// 创建业务资料，返回 objectId
+    @discardableResult
+    func createUser(_ profile: UserProfile) async throws -> String {
+        let fields = try fieldsForCreate(profile)
+        return try await client.createObject(className: Constants.colUsers, fields: fields)
     }
 
-    /// 只移除当前设备这一个 token，不影响同账号下的其他设备
-    func removeFCMToken(uid: String, token: String) async throws {
-        try await updateUserFields(uid: uid, fields: ["fcmTokens": FieldValue.arrayRemove([token])])
-    }
-
-    func listenUser(_ uid: String, onChange: @escaping (UserProfile?) -> Void) -> ListenerRegistration {
-        db.collection(Constants.colUsers).document(uid)
-            .addSnapshotListener { snapshot, error in
-                guard error == nil else { onChange(nil); return }
-                guard let snapshot, snapshot.exists else { onChange(nil); return }
-                onChange(try? snapshot.data(as: UserProfile.self))
-            }
+    /// 局部更新（避免覆盖 partnerId 等并发字段）
+    func updateUserFields(objectId: String, fields: [String: Any]) async throws {
+        try await client.updateObject(className: Constants.colUsers, objectId: objectId, fields: fields)
     }
 
     // MARK: - pairCodes
 
     func createPairCode(_ pairCode: PairCode) async throws {
-        try db.collection(Constants.colPairCodes)
-            .document(pairCode.code)
-            .setData(from: pairCode)
+        let fields = try fieldsForCreate(pairCode)
+        _ = try await client.createObject(className: Constants.colPairCodes, fields: fields)
     }
 
     func fetchPairCode(_ code: String) async throws -> PairCode? {
-        let snapshot = try await db.collection(Constants.colPairCodes).document(code).getDocument()
-        guard snapshot.exists else { return nil }
-        return try snapshot.data(as: PairCode.self)
+        let query = [LeanCloudClient.whereItem(["code": code])]
+        let results = try await client.getResults(className: Constants.colPairCodes, query: query)
+        guard let first = results.first else { return nil }
+        return try client.decode(first, as: PairCode.self)
     }
 
     func deletePairCode(_ code: String) async throws {
-        try await db.collection(Constants.colPairCodes).document(code).delete()
+        let query = [LeanCloudClient.whereItem(["code": code])]
+        let results = try await client.getResults(className: Constants.colPairCodes, query: query)
+        if let first = results.first, let oid = first["objectId"] as? String {
+            try await client.deleteObject(className: Constants.colPairCodes, objectId: oid)
+        }
     }
 
-    /// 清理当前用户已过期的配对码（生成新码时顺手调用）
+    /// 清理当前用户已过期的配对码
     func deleteExpiredPairCodes(creatorUserId: String) async throws {
-        let snapshot = try await db.collection(Constants.colPairCodes)
-            .whereField("creatorUserId", isEqualTo: creatorUserId)
-            .getDocuments()
-        for document in snapshot.documents where document.documentID.count == Constants.pairCodeLength {
-            let pairCode = try? document.data(as: PairCode.self)
-            if pairCode?.isExpired == true {
-                try? await document.reference.delete()
+        let query = [LeanCloudClient.whereItem(["creatorUserId": creatorUserId])]
+        let results = try await client.getResults(className: Constants.colPairCodes, query: query)
+        for dict in results {
+            guard let oid = dict["objectId"] as? String else { continue }
+            if let pairCode = try? client.decode(dict, as: PairCode.self), pairCode.isExpired {
+                try? await client.deleteObject(className: Constants.colPairCodes, objectId: oid)
             }
         }
     }
 
     // MARK: - 情侣绑定
 
-    /// 双向写入 partnerId，并设置双方 users 文档（若不存在则创建）
+    /// 双向写入 partnerId。LeanCloud REST 无事务，用两次 PUT 实现（本地自用，偶发并发可忽略）。
     func bindPartners(uidA: String, uidB: String) async throws {
-        try await db.runTransaction { transaction, errorPointer in
-            let refA = self.db.collection(Constants.colUsers).document(uidA)
-            let refB = self.db.collection(Constants.colUsers).document(uidB)
-
-            do {
-                let snapA = try transaction.getDocument(refA)
-                let snapB = try transaction.getDocument(refB)
-
-                guard snapA.exists, snapB.exists else {
-                    errorPointer?.pointee = NSError(
-                        domain: "CoupleFit",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: AppError.userDocumentMissing.errorDescription ?? ""]
-                    )
-                    return nil
-                }
-
-                // 校验双方当前都未绑定（或已绑定彼此）
-                let partnerA = snapA.data()?["partnerId"] as? String
-                let partnerB = snapB.data()?["partnerId"] as? String
-
-                if let partnerA, !partnerA.isEmpty, partnerA != uidB {
-                    errorPointer?.pointee = NSError(
-                        domain: "CoupleFit",
-                        code: -2,
-                        userInfo: [NSLocalizedDescriptionKey: AppError.alreadyPairedWithOther.errorDescription ?? ""]
-                    )
-                    return nil
-                }
-                if let partnerB, !partnerB.isEmpty, partnerB != uidA {
-                    errorPointer?.pointee = NSError(
-                        domain: "CoupleFit",
-                        code: -2,
-                        userInfo: [NSLocalizedDescriptionKey: AppError.alreadyPairedWithOther.errorDescription ?? ""]
-                    )
-                    return nil
-                }
-
-                transaction.updateData(["partnerId": uidB], forDocument: refA)
-                transaction.updateData(["partnerId": uidA], forDocument: refB)
-            } catch {
-                errorPointer?.pointee = error as NSError
-                return nil
-            }
-            return nil
+        let profileA = try await fetchUser(ownerId: uidA)
+        let profileB = try await fetchUser(ownerId: uidB)
+        guard let oidA = profileA?.id, let oidB = profileB?.id else {
+            throw AppError.userDocumentMissing
         }
+        try await client.updateObject(className: Constants.colUsers, objectId: oidA, fields: ["partnerId": uidB])
+        try await client.updateObject(className: Constants.colUsers, objectId: oidB, fields: ["partnerId": uidA])
     }
 
     /// 解绑：清除双方的 partnerId
     func unbindPartners(myUID: String, partnerUID: String) async throws {
-        // 注意：runBatch 是 Android 的 API，iOS 上是 batch() + commit()
-        let batch = db.batch()
-        batch.updateData(["partnerId": FieldValue.delete()],
-                         forDocument: db.collection(Constants.colUsers).document(myUID))
-        batch.updateData(["partnerId": FieldValue.delete()],
-                         forDocument: db.collection(Constants.colUsers).document(partnerUID))
-        try await batch.commit()
+        if let oid = try await fetchUser(ownerId: myUID)?.id {
+            try await client.updateObject(className: Constants.colUsers, objectId: oid, fields: ["partnerId": NSNull()])
+        }
+        if let oid = try await fetchUser(ownerId: partnerUID)?.id {
+            try await client.updateObject(className: Constants.colUsers, objectId: oid, fields: ["partnerId": NSNull()])
+        }
     }
 
     // MARK: - exerciseRecords
 
-    /// 监听某人某一天的记录（首页实时同步用）
-    func listenRecords(userId: String,
-                       dateString: String,
-                       onChange: @escaping ([ExerciseRecord]) -> Void) -> ListenerRegistration {
-        db.collection(Constants.colExerciseRecords)
-            .whereField("userId", isEqualTo: userId)
-            .whereField("dateString", isEqualTo: dateString)
-            .addSnapshotListener { snapshot, error in
-                guard error == nil else { return }
-                guard let snapshot else { return }
-                let records = snapshot.documents.compactMap { try? $0.data(as: ExerciseRecord.self) }
-                onChange(records.sorted { $0.startTime.dateValue() < $1.startTime.dateValue() })
-            }
+    func fetchRecords(userId: String, dateString: String) async throws -> [ExerciseRecord] {
+        let query = [
+            LeanCloudClient.whereItem(["userId": userId, "dateString": dateString]),
+            URLQueryItem(name: "order", value: "startTime")
+        ]
+        let results = try await client.getResults(className: Constants.colExerciseRecords, query: query)
+        return results.compactMap { try? client.decode($0, as: ExerciseRecord.self) }
     }
 
-    /// 监听某人最近 N 天的记录（历史 / 统计用）
-    func listenRecentRecords(userId: String,
-                             sinceDateString: String,
-                             onChange: @escaping ([ExerciseRecord]) -> Void) -> ListenerRegistration {
-        db.collection(Constants.colExerciseRecords)
-            .whereField("userId", isEqualTo: userId)
-            .whereField("dateString", isGreaterThanOrEqualTo: sinceDateString)
-            .addSnapshotListener { snapshot, error in
-                guard error == nil else { return }
-                guard let snapshot else { return }
-                let records = snapshot.documents.compactMap { try? $0.data(as: ExerciseRecord.self) }
-                onChange(records.sorted { $0.startTime.dateValue() > $1.startTime.dateValue() })
-            }
+    func fetchRecentRecords(userId: String, sinceDateString: String) async throws -> [ExerciseRecord] {
+        let query = [
+            LeanCloudClient.whereItem(["userId": userId, "dateString": ["$gte": sinceDateString]]),
+            URLQueryItem(name: "order", value: "-startTime")
+        ]
+        let results = try await client.getResults(className: Constants.colExerciseRecords, query: query)
+        return results.compactMap { try? client.decode($0, as: ExerciseRecord.self) }
     }
 
     @discardableResult
     func addRecord(_ record: ExerciseRecord) async throws -> String {
-        let reference = try db.collection(Constants.colExerciseRecords).addDocument(from: record)
-        return reference.documentID
+        let fields = try fieldsForCreate(record)
+        return try await client.createObject(className: Constants.colExerciseRecords, fields: fields)
     }
 
     func updateRecord(_ record: ExerciseRecord) async throws {
         guard let id = record.id else { return }
-        try db.collection(Constants.colExerciseRecords).document(id).setData(from: record, merge: false)
+        let fields = try fieldsForUpdate(record)
+        try await client.updateObject(className: Constants.colExerciseRecords, objectId: id, fields: fields)
     }
 
     func deleteRecord(_ record: ExerciseRecord) async throws {
         guard let id = record.id else { return }
-        try await db.collection(Constants.colExerciseRecords).document(id).delete()
+        try await client.deleteObject(className: Constants.colExerciseRecords, objectId: id)
     }
 
     // MARK: - goals
 
-    func listenGoal(userId: String, onChange: @escaping (Goal?) -> Void) -> ListenerRegistration {
-        db.collection(Constants.colGoals).document(userId)
-            .addSnapshotListener { snapshot, error in
-                guard error == nil else { return }
-                guard let snapshot, snapshot.exists else { onChange(nil); return }
-                onChange(try? snapshot.data(as: Goal.self))
-            }
+    func fetchGoal(userId: String) async throws -> Goal? {
+        let query = [LeanCloudClient.whereItem(["userId": userId])]
+        let results = try await client.getResults(className: Constants.colGoals, query: query)
+        guard let first = results.first else { return nil }
+        return try client.decode(first, as: Goal.self)
     }
 
     func saveGoal(_ goal: Goal) async throws {
-        try db.collection(Constants.colGoals).document(goal.userId).setData(from: goal)
+        var fields = try fieldsForUpdate(goal)
+        fields["userId"] = goal.userId
+        if let id = goal.id {
+            try await client.updateObject(className: Constants.colGoals, objectId: id, fields: fields)
+        } else {
+            let oid = try await client.createObject(className: Constants.colGoals, fields: fields)
+            _ = oid
+        }
     }
 
     // MARK: - likes
 
-    /// 监听某人在某天收到的赞（首页对方卡片实时显示）
-    func listenLikes(toUserId: String,
-                     dateString: String,
-                     onChange: @escaping ([Like]) -> Void) -> ListenerRegistration {
-        db.collection(Constants.colLikes)
-            .whereField("toUserId", isEqualTo: toUserId)
-            .whereField("dateString", isEqualTo: dateString)
-            .addSnapshotListener { snapshot, error in
-                guard error == nil else { return }
-                guard let snapshot else { return }
-                onChange(snapshot.documents.compactMap { try? $0.data(as: Like.self) })
-            }
+    func fetchLikes(toUserId: String, dateString: String) async throws -> [Like] {
+        let query = [
+            LeanCloudClient.whereItem(["toUserId": toUserId, "dateString": dateString]),
+            URLQueryItem(name: "order", value: "-createdTs")
+        ]
+        let results = try await client.getResults(className: Constants.colLikes, query: query)
+        return results.compactMap { try? client.decode($0, as: Like.self) }
     }
 
-    /// 我今天是否已经给对方点过赞（幂等：同一天只记一次）
     func fetchMyLike(fromUserId: String, toUserId: String, dateString: String) async throws -> Like? {
-        let snapshot = try await db.collection(Constants.colLikes)
-            .whereField("fromUserId", isEqualTo: fromUserId)
-            .whereField("toUserId", isEqualTo: toUserId)
-            .whereField("dateString", isEqualTo: dateString)
-            .limit(to: 1)
-            .getDocuments()
-        return try snapshot.documents.first?.data(as: Like.self)
+        let query = [
+            LeanCloudClient.whereItem([
+                "fromUserId": fromUserId,
+                "toUserId": toUserId,
+                "dateString": dateString
+            ]),
+            URLQueryItem(name: "limit", value: "1")
+        ]
+        let results = try await client.getResults(className: Constants.colLikes, query: query)
+        return results.first.flatMap { try? client.decode($0, as: Like.self) }
     }
 
     @discardableResult
     func addLike(_ like: Like) async throws -> String {
-        let reference = try db.collection(Constants.colLikes).addDocument(from: like)
-        return reference.documentID
+        let fields = try fieldsForCreate(like)
+        return try await client.createObject(className: Constants.colLikes, fields: fields)
     }
 
     func removeLike(_ like: Like) async throws {
         guard let id = like.id else { return }
-        try await db.collection(Constants.colLikes).document(id).delete()
+        try await client.deleteObject(className: Constants.colLikes, objectId: id)
     }
 }

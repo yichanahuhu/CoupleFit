@@ -1,4 +1,3 @@
-import FirebaseFirestore
 import SwiftUI
 
 // MARK: - 历史记录
@@ -29,7 +28,7 @@ struct HistoryView: View {
             .navigationTitle("历史")
             .navigationBarTitleDisplayMode(.inline)
             .refreshable {
-                await appState.startListening()
+                await appState.refreshAll()
             }
             .overlay {
                 if isDeleting {
@@ -54,7 +53,7 @@ struct HistoryView: View {
                     pendingDelete = nil
                 }
             } message: { record in
-                Text("将删除 \(record.startTime.dateValue().historyTimeText) 的\(record.exerciseType.displayName)记录，删除后无法恢复。")
+                Text("将删除 \(record.startDate.historyTimeText) 的\(record.exerciseType.displayName)记录，删除后无法恢复。")
             }
             .toast(toastBinding)
             .alert("出错了", isPresented: isShowingError) {
@@ -238,13 +237,13 @@ struct HistoryView: View {
             }
             appState.toastMessage = "已删除记录"
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     private func timeRangeText(_ record: ExerciseRecord) -> String {
-        let start = DateHelper.timeFormatter.string(from: record.startTime.dateValue())
-        let end = DateHelper.timeFormatter.string(from: record.endTime.dateValue())
+        let start = DateHelper.timeFormatter.string(from: record.startDate)
+        let end = DateHelper.timeFormatter.string(from: record.endDate)
         return "\(start)~\(end)"
     }
 }

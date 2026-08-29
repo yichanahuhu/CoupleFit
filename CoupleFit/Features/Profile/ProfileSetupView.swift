@@ -216,7 +216,7 @@ struct ProfileSetupView: View {
                 dismiss()
             }
         } catch {
-            errorMessage = (error as NSError).friendlyAuthMessage
+            errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 }

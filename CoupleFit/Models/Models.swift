@@ -1,46 +1,45 @@
-import FirebaseFirestore
+import Foundation
 
-// MARK: - users 集合
+// MARK: - users 业务资料（LeanCloud class: UserProfile）
 
-/// users/{userId}
+/// UserProfile/{objectId}，ownerId 对应 LeanCloud _User 的 objectId
 struct UserProfile: Codable, Identifiable, Equatable {
-    @DocumentID var id: String?
+    /// LeanCloud objectId
+    var id: String?
+    /// 对应 _User.objectId（即本 App 的 uid）
+    var ownerId: String
     var email: String
     var displayName: String
-    /// 对方的 userId；nil 表示尚未绑定
+    /// 对方的 ownerId；nil 表示尚未绑定
     var partnerId: String?
     var exerciseType: ExerciseType
-    /// 用于「提醒对方」的 FCM 推送，每次 App 启动刷新。
-    /// 之所以是数组：一个账号可能同时登录多台设备（iPhone + iPad），
-    /// 单值字段会导致后登录的设备顶掉先登录的，只剩一台能收到推送。
-    /// 声明为 Optional 是为了兼容早期不含该字段的文档，读取时一律用 `?? []`。
-    var fcmTokens: [String]?
-    var createdAt: Timestamp
+    /// 创建时间（秒，since1970）。映射到 LeanCloud 字段 `createdTs`，避开系统保留字 createdAt
+    var createdTs: TimeInterval
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id = "objectId"
+        case ownerId
         case email
         case displayName
         case partnerId
         case exerciseType
-        case fcmTokens
-        case createdAt
+        case createdTs
     }
 
     init(id: String? = nil,
+         ownerId: String,
          email: String,
          displayName: String,
          partnerId: String? = nil,
          exerciseType: ExerciseType,
-         fcmTokens: [String]? = [],
-         createdAt: Timestamp = Timestamp()) {
+         createdTs: TimeInterval = Date().timeIntervalSince1970) {
         self.id = id
+        self.ownerId = ownerId
         self.email = email
         self.displayName = displayName
         self.partnerId = partnerId
         self.exerciseType = exerciseType
-        self.fcmTokens = fcmTokens
-        self.createdAt = createdAt
+        self.createdTs = createdTs
     }
 
     var isPaired: Bool {
@@ -49,51 +48,51 @@ struct UserProfile: Codable, Identifiable, Equatable {
     }
 }
 
-// MARK: - pairCodes 集合
+// MARK: - pairCodes（LeanCloud class: PairCode）
 
-/// pairCodes/{code}，有效期 10 分钟，绑定成功后删除
+/// PairCode/{objectId}，有效期 10 分钟，绑定成功后删除
 struct PairCode: Codable, Identifiable, Equatable {
-    @DocumentID var id: String?
+    var id: String?
     var code: String
     var creatorUserId: String
-    var expiresAt: Timestamp
+    var expiresAt: TimeInterval
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id = "objectId"
         case code
         case creatorUserId
         case expiresAt
     }
 
-    init(code: String, creatorUserId: String, expiresAt: Timestamp) {
-        self.id = code
+    init(id: String? = nil, code: String, creatorUserId: String, expiresAt: TimeInterval) {
+        self.id = id
         self.code = code
         self.creatorUserId = creatorUserId
         self.expiresAt = expiresAt
     }
 
-    var isExpired: Bool { expiresAt.dateValue() < Date() }
+    var isExpired: Bool { Date(timeIntervalSince1970: expiresAt) < Date() }
 }
 
-// MARK: - exerciseRecords 集合
+// MARK: - exerciseRecords（LeanCloud class: ExerciseRecord）
 
-/// exerciseRecords/{autoId}
+/// ExerciseRecord/{objectId}
 /// dateString 使用用户本地时区的 "yyyy-MM-dd"，便于按天查询与分组
 struct ExerciseRecord: Codable, Identifiable, Equatable {
-    @DocumentID var id: String?
+    var id: String?
     var userId: String
     var exerciseType: ExerciseType
     var dateString: String
-    var startTime: Timestamp
-    var endTime: Timestamp
+    var startTime: TimeInterval
+    var endTime: TimeInterval
     var durationSeconds: Int
     var count: Int
     var calories: Double?
     var note: String?
-    var createdAt: Timestamp
+    var createdTs: TimeInterval
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id = "objectId"
         case userId
         case exerciseType
         case dateString
@@ -103,7 +102,7 @@ struct ExerciseRecord: Codable, Identifiable, Equatable {
         case count
         case calories
         case note
-        case createdAt
+        case createdTs
     }
 
     init(id: String? = nil,
@@ -116,19 +115,23 @@ struct ExerciseRecord: Codable, Identifiable, Equatable {
          count: Int,
          calories: Double? = nil,
          note: String? = nil,
-         createdAt: Date = Date()) {
+         createdTs: Date = Date()) {
         self.id = id
         self.userId = userId
         self.exerciseType = exerciseType
         self.dateString = dateString
-        self.startTime = Timestamp(date: startTime)
-        self.endTime = Timestamp(date: endTime)
+        self.startTime = startTime.timeIntervalSince1970
+        self.endTime = endTime.timeIntervalSince1970
         self.durationSeconds = durationSeconds
         self.count = count
         self.calories = calories
         self.note = note
-        self.createdAt = Timestamp(date: createdAt)
+        self.createdTs = createdTs.timeIntervalSince1970
     }
+
+    /// 展示用时间
+    var startDate: Date { Date(timeIntervalSince1970: startTime) }
+    var endDate: Date { Date(timeIntervalSince1970: endTime) }
 
     /// 展示用时长，如 "12:34" 或 "1:02:03"
     var durationText: String {
@@ -136,11 +139,11 @@ struct ExerciseRecord: Codable, Identifiable, Equatable {
     }
 }
 
-// MARK: - goals 集合
+// MARK: - goals（LeanCloud class: Goal）
 
-/// goals/{userId}，每人一份
+/// Goal/{objectId}，每人一份，objectId 即 userId 方便定位
 struct Goal: Codable, Identifiable, Equatable {
-    @DocumentID var id: String?
+    var id: String?
     var userId: String
     /// 每日时长目标（秒）
     var dailyDurationSeconds: Int
@@ -154,7 +157,7 @@ struct Goal: Codable, Identifiable, Equatable {
     var remindPartner: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id = "objectId"
         case userId
         case dailyDurationSeconds
         case dailyCount
@@ -188,28 +191,33 @@ struct Goal: Codable, Identifiable, Equatable {
     }
 }
 
-// MARK: - likes 集合
+// MARK: - likes（LeanCloud class: Like）
 
-/// likes/{autoId}
+/// Like/{objectId}
 struct Like: Codable, Identifiable, Equatable {
-    @DocumentID var id: String?
+    var id: String?
     var fromUserId: String
     var toUserId: String
     var dateString: String
-    var createdAt: Timestamp
+    var createdTs: TimeInterval
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case id = "objectId"
         case fromUserId
         case toUserId
         case dateString
-        case createdAt
+        case createdTs
     }
 
-    init(fromUserId: String, toUserId: String, dateString: String, createdAt: Date = Date()) {
+    init(id: String? = nil,
+         fromUserId: String,
+         toUserId: String,
+         dateString: String,
+         createdTs: Date = Date()) {
+        self.id = id
         self.fromUserId = fromUserId
         self.toUserId = toUserId
         self.dateString = dateString
-        self.createdAt = Timestamp(date: createdAt)
+        self.createdTs = createdTs.timeIntervalSince1970
     }
 }

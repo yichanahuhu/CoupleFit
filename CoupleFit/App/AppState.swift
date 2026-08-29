@@ -1,17 +1,17 @@
-import FirebaseAuth
-import FirebaseFirestore
 import Foundation
 import Observation
 
 // MARK: - 全局应用状态
 
-/// 持有当前用户、情侣、今日记录、目标与点赞数据，
-/// 并统一管理所有 Firestore 快照监听器。
+/// 持有当前用户、情侣、今日记录、目标与点赞数据。
+///
+/// 数据同步策略：登录后启动一个后台轮询任务（每 12 秒一次 `refreshAll`），
+/// 拉取自己与对方的最新数据。相比 Firebase 的快照监听，轮询实现简单、不依赖第三方 SDK，
+/// 两人数据量极小，12 秒延迟在运动打卡场景完全可接受。
 ///
 /// 生命周期：
-/// - 登录状态变化 → `bindSession()`
-/// - 自己的 users 文档变化（含 partnerId）→ 重建对方相关监听器
-/// - 跨天 → `refreshDayBoundaryIfNeeded()`，由 HomeView 进入前台时调用
+/// - 登录状态变化 → `bindSession()`（创建/读取 UserProfile 并启动轮询）
+/// - 跨天 → `refreshDayBoundaryIfNeeded()`，由 MainTabView 进入前台时调用
 @MainActor
 @Observable
 final class AppState {
@@ -19,7 +19,7 @@ final class AppState {
     // MARK: 会话
 
     private(set) var uid: String?
-    var isSessionReady = false      // 用户文档已加载完成
+    var isSessionReady = false      // 用户资料已加载完成
     var isLoading = false
 
     // MARK: 资料
@@ -53,25 +53,11 @@ final class AppState {
     var toastMessage: String?
     var dayBoundaryString: String = DateHelper.todayString
 
-    // MARK: 监听器
+    // MARK: 轮询
 
-    private var myUserListener: ListenerRegistration?
-    private var partnerUserListener: ListenerRegistration?
-    private var myTodayListener: ListenerRegistration?
-    private var partnerTodayListener: ListenerRegistration?
-    private var myRecentListener: ListenerRegistration?
-    private var partnerRecentListener: ListenerRegistration?
-    private var myGoalListener: ListenerRegistration?
-    private var partnerGoalListener: ListenerRegistration?
-    private var likesReceivedListener: ListenerRegistration?
-    private var likeSentListener: ListenerRegistration?
+    private var pollTask: Task<Void, Never>?
 
-    // 惰性访问：AppState 由 SwiftUI 在 App 属性初始化阶段创建，
-    // 早于 AppDelegate 里的 FirebaseApp.configure()。
-    // 若在此处直接持有 FirestoreService.shared，会提前触发 Firestore.firestore() 导致崩溃。
     private var firestore: FirestoreService { FirestoreService.shared }
-
-    private var currentPartnerId: String?
 
     // MARK: - 派生态
 
@@ -104,39 +90,39 @@ final class AppState {
 
     // MARK: - 会话绑定
 
-    /// 登录成功后调用：创建/读取 users 文档并启动监听
+    /// 登录成功后调用：创建/读取 UserProfile 并启动轮询
     func bindSession(uid: String, fallbackEmail: String?, fallbackName: String?) async {
         self.uid = uid
         isLoading = true
         defer { isLoading = false }
 
         do {
-            if let existing = try await firestore.fetchUser(uid) {
+            if let existing = try await firestore.fetchUser(ownerId: uid) {
                 myProfile = existing
             } else {
-                // 首次登录：写入 users 文档，运动类型默认呼啦圈，由 ProfileSetupView 引导修改
+                // 首次登录：写入 UserProfile 文档，运动类型默认呼啦圈，由 ProfileSetupView 引导修改
                 let profile = UserProfile(
-                    id: uid,
+                    ownerId: uid,
                     email: fallbackEmail ?? "",
                     displayName: fallbackName ?? "",
-                    exerciseType: .hulaHoop,
-                    createdAt: Timestamp()
+                    exerciseType: .hulaHoop
                 )
-                try await firestore.createUser(profile)
-                myProfile = profile
+                let oid = try await firestore.createUser(profile)
+                var p = profile
+                p.id = oid
+                myProfile = p
             }
 
-            await MessagingService.shared.uploadTokenIfNeeded(uid: uid)
-            startListening()
+            startPolling()
             isSessionReady = true
         } catch {
-            errorMessage = (error as NSError).friendlyAuthMessage
+            errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     /// 退出登录 / 解绑后重置
     func reset() {
-        teardownListeners()
+        stopPolling()
         uid = nil
         isSessionReady = false
         myProfile = nil
@@ -149,157 +135,88 @@ final class AppState {
         partnerGoal = nil
         likesReceivedToday = []
         myLikeToPartnerToday = nil
-        currentPartnerId = nil
         dayBoundaryString = DateHelper.todayString
     }
 
-    // MARK: - 监听器管理
+    // MARK: - 轮询
 
-    func startListening() {
-        guard let uid else { return }
-        teardownListeners()
-
-        // 自己的资料（partnerId 变化会触发后续监听重建）
-        myUserListener = firestore.listenUser(uid) { [weak self] profile in
-            Task { @MainActor in
-                guard let self else { return }
-                self.myProfile = profile
-                self.refreshPartnerListenersIfNeeded()
-            }
-        }
-
-        let today = dayBoundaryString
-        let since = DateHelper.dateString(from: Calendar.current.date(byAdding: .day, value: -89, to: Date()) ?? Date())
-
-        myTodayListener = firestore.listenRecords(userId: uid, dateString: today) { [weak self] records in
-            Task { @MainActor in self?.myTodayRecords = records }
-        }
-
-        myRecentListener = firestore.listenRecentRecords(userId: uid, sinceDateString: since) { [weak self] records in
-            Task { @MainActor in self?.myRecentRecords = records }
-        }
-
-        myGoalListener = firestore.listenGoal(userId: uid) { [weak self] goal in
-            Task { @MainActor in self?.myGoal = goal }
-        }
-
-        refreshPartnerListenersIfNeeded()
-    }
-
-    private func refreshPartnerListenersIfNeeded() {
-        guard let uid else { return }
-        let partnerId = myProfile?.partnerId
-
-        // partnerId 未变化则无需重建
-        guard partnerId != currentPartnerId else { return }
-        currentPartnerId = partnerId
-
-        partnerUserListener?.remove(); partnerUserListener = nil
-        partnerTodayListener?.remove(); partnerTodayListener = nil
-        partnerRecentListener?.remove(); partnerRecentListener = nil
-        partnerGoalListener?.remove(); partnerGoalListener = nil
-        likesReceivedListener?.remove(); likesReceivedListener = nil
-        likeSentListener?.remove(); likeSentListener = nil
-
-        partnerProfile = nil
-        partnerTodayRecords = []
-        partnerRecentRecords = []
-        partnerGoal = nil
-        likesReceivedToday = []
-        myLikeToPartnerToday = nil
-
-        guard let partnerId, !partnerId.isEmpty else { return }
-
-        let today = dayBoundaryString
-        let since = DateHelper.dateString(from: Calendar.current.date(byAdding: .day, value: -89, to: Date()) ?? Date())
-
-        partnerUserListener = firestore.listenUser(partnerId) { [weak self] profile in
-            Task { @MainActor in self?.partnerProfile = profile }
-        }
-        partnerTodayListener = firestore.listenRecords(userId: partnerId, dateString: today) { [weak self] records in
-            Task { @MainActor in self?.partnerTodayRecords = records }
-        }
-        partnerRecentListener = firestore.listenRecentRecords(userId: partnerId, sinceDateString: since) { [weak self] records in
-            Task { @MainActor in self?.partnerRecentRecords = records }
-        }
-        partnerGoalListener = firestore.listenGoal(userId: partnerId) { [weak self] goal in
-            Task { @MainActor in self?.partnerGoal = goal }
-        }
-        startLikeListeners(uid: uid, partnerId: partnerId)
-    }
-
-    private func startLikeListeners(uid: String, partnerId: String) {
-        let today = dayBoundaryString
-
-        // 我收到的赞
-        likesReceivedListener = firestore.listenLikes(toUserId: uid, dateString: today) { [weak self] likes in
-            Task { @MainActor in self?.likesReceivedToday = likes }
-        }
-
-        // 我给对方点的赞：用查询 myself → partner 的监听器模拟"我的点赞状态"
-        likeSentListener = firestore.listenLikes(toUserId: partnerId, dateString: today) { [weak self] likes in
-            guard let self else { return }
-            Task { @MainActor in
-                self.myLikeToPartnerToday = likes.first { $0.fromUserId == uid }
+    func startPolling() {
+        stopPolling()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshAll()
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
             }
         }
     }
 
-    private func teardownListeners() {
-        myUserListener?.remove()
-        partnerUserListener?.remove()
-        myTodayListener?.remove()
-        partnerTodayListener?.remove()
-        myRecentListener?.remove()
-        partnerRecentListener?.remove()
-        myGoalListener?.remove()
-        partnerGoalListener?.remove()
-        likesReceivedListener?.remove()
-        likeSentListener?.remove()
+    func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
 
-        myUserListener = nil
-        partnerUserListener = nil
-        myTodayListener = nil
-        partnerTodayListener = nil
-        myRecentListener = nil
-        partnerRecentListener = nil
-        myGoalListener = nil
-        partnerGoalListener = nil
-        likesReceivedListener = nil
-        likeSentListener = nil
-        currentPartnerId = nil
+    /// 一次性拉取自己与对方的全部数据
+    func refreshAll() async {
+        guard let uid else { return }
+        let today = dayBoundaryString
+        let since = DateHelper.dateString(from: Calendar.current.date(byAdding: .day, value: -89, to: Date()) ?? Date())
+
+        do {
+            async let me = firestore.fetchUser(ownerId: uid)
+            async let myToday = firestore.fetchRecords(userId: uid, dateString: today)
+            async let myRecent = firestore.fetchRecentRecords(userId: uid, sinceDateString: since)
+            async let myGoal = firestore.fetchGoal(userId: uid)
+
+            let (fetchedMe, mt, mr, mg) = await (try me, try myToday, try myRecent, try myGoal)
+            self.myProfile = fetchedMe
+            self.myTodayRecords = mt
+            self.myRecentRecords = mr
+            self.myGoal = mg
+
+            guard let partnerId = fetchedMe?.partnerId, !partnerId.isEmpty else {
+                self.partnerProfile = nil
+                self.partnerTodayRecords = []
+                self.partnerRecentRecords = []
+                self.partnerGoal = nil
+                self.likesReceivedToday = []
+                self.myLikeToPartnerToday = nil
+                return
+            }
+
+            async let pProf = firestore.fetchUser(ownerId: partnerId)
+            async let pToday = firestore.fetchRecords(userId: partnerId, dateString: today)
+            async let pRecent = firestore.fetchRecentRecords(userId: partnerId, sinceDateString: since)
+            async let pGoal = firestore.fetchGoal(userId: partnerId)
+            async let likesR = firestore.fetchLikes(toUserId: uid, dateString: today)
+            async let likeS = firestore.fetchMyLike(fromUserId: uid, toUserId: partnerId, dateString: today)
+
+            let (pp, pt, pr, pg, lr, ls) = await (try pProf, try pToday, try pRecent, try pGoal, try likesR, try likeS)
+            self.partnerProfile = pp
+            self.partnerTodayRecords = pt
+            self.partnerRecentRecords = pr
+            self.partnerGoal = pg
+            self.likesReceivedToday = lr
+            self.myLikeToPartnerToday = ls
+        } catch {
+            self.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     // MARK: - 跨天处理
 
-    /// App 回到前台或首页出现时调用；若已跨天，重建"今日"监听器
+    /// App 回到前台或首页出现时调用；若已跨天，重置"今日"缓存并立即刷新
     func refreshDayBoundaryIfNeeded() {
         let today = DateHelper.todayString
         guard today != dayBoundaryString else { return }
         dayBoundaryString = today
-        guard let uid else { return }
-
-        myTodayListener?.remove()
-        partnerTodayListener?.remove()
-        likesReceivedListener?.remove()
-        likeSentListener?.remove()
-
-        myTodayListener = firestore.listenRecords(userId: uid, dateString: today) { [weak self] records in
-            Task { @MainActor in self?.myTodayRecords = records }
-        }
-        if let partnerId = myProfile?.partnerId, !partnerId.isEmpty {
-            partnerTodayListener = firestore.listenRecords(userId: partnerId, dateString: today) { [weak self] records in
-                Task { @MainActor in self?.partnerTodayRecords = records }
-            }
-            startLikeListeners(uid: uid, partnerId: partnerId)
-        }
+        Task { await refreshAll() }
     }
 
     // MARK: - 操作
 
     func saveProfile(displayName: String, exerciseType: ExerciseType) async throws {
-        guard let uid else { throw AppError.notSignedIn }
-        try await firestore.updateUserFields(uid: uid, fields: [
+        guard let profileId = myProfile?.id else { throw AppError.notSignedIn }
+        try await firestore.updateUserFields(objectId: profileId, fields: [
             "displayName": displayName,
             "exerciseType": exerciseType.rawValue
         ])
@@ -332,7 +249,7 @@ final class AppState {
                 toastMessage = "已给对方点赞 💗"
             }
         } catch {
-            errorMessage = (error as NSError).friendlyAuthMessage
+            errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -386,7 +303,7 @@ final class AppState {
     static func groupByDate(records: [ExerciseRecord]) -> [(dateString: String, records: [ExerciseRecord])] {
         let grouped = Dictionary(grouping: records, by: \.dateString)
         return grouped
-            .map { (dateString: $0.key, records: $0.value.sorted { $0.startTime.dateValue() > $1.startTime.dateValue() }) }
+            .map { (dateString: $0.key, records: $0.value.sorted { $0.startTime > $1.startTime }) }
             .sorted { $0.dateString > $1.dateString }
     }
 }

@@ -36,7 +36,7 @@ struct StatsView: View {
             .navigationTitle("统计")
             .navigationBarTitleDisplayMode(.inline)
             .refreshable {
-                await appState.startListening()
+                await appState.refreshAll()
             }
         }
     }

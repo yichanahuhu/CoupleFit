@@ -1,54 +1,16 @@
-import FirebaseCore
-import FirebaseMessaging
 import UIKit
 import UserNotifications
 
 // MARK: - AppDelegate
 
-/// 负责 Firebase 初始化、推送注册与通知回调。
+/// 负责本地通知授权与回调。不再依赖 Firebase / 远程推送（免费 Apple ID 无推送权限）。
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        FirebaseApp.configure()
-
-        // 必须在 configure 之后才能触碰 Auth.auth()
-        Task { @MainActor in
-            AuthService.shared.start()
-        }
-
-        // 远程推送：FCM
-        Messaging.messaging().delegate = self
         UNUserNotificationCenter.current().delegate = self
-        application.registerForRemoteNotifications()
-
+        // 本地通知授权在用户首次设置提醒目标时由 NotificationService 申请
         return true
-    }
-
-    // MARK: APNs token → FCM
-
-    func application(_ application: UIApplication,
-                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        Messaging.messaging().apnsToken = deviceToken
-    }
-
-    func application(_ application: UIApplication,
-                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        // 模拟器或未配置推送证书时会走到这里，不影响主流程
-        print("[CoupleFit] 注册远程通知失败（模拟器属正常现象）: \(error.localizedDescription)")
-    }
-}
-
-// MARK: - MessagingDelegate
-
-extension AppDelegate: MessagingDelegate {
-    /// FCM token 刷新：写回当前用户的 users 文档
-    func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
-        guard let fcmToken else { return }
-        Task { @MainActor in
-            await MessagingService.shared.uploadTokenIfNeeded(uid: AuthService.shared.currentUID)
-        }
-        _ = fcmToken
     }
 }
 
@@ -63,7 +25,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .list, .sound])
     }
 
-    /// 点击通知：若携带 dateString 可跳转到当天历史，预留扩展点
+    /// 点击通知
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {

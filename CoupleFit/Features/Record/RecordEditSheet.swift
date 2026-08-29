@@ -1,4 +1,3 @@
-import FirebaseFirestore
 import Foundation
 import SwiftUI
 
@@ -94,7 +93,7 @@ struct RecordEditSheet: View {
             _note = State(initialValue: "")
 
         case .edit(let record):
-            _startTime = State(initialValue: record.startTime.dateValue())
+            _startTime = State(initialValue: record.startDate)
             _durationMinutes = State(initialValue: record.durationSeconds / 60)
             _durationSeconds = State(initialValue: record.durationSeconds % 60)
             _countText = State(initialValue: record.count > 0 ? String(record.count) : "")
@@ -341,8 +340,8 @@ struct RecordEditSheet: View {
                 var updated = original
                 updated.exerciseType = exerciseType
                 updated.dateString = dateString
-                updated.startTime = Timestamp(date: startTime)
-                updated.endTime = Timestamp(date: endTime)
+                updated.startTime = startTime.timeIntervalSince1970
+                updated.endTime = endTime.timeIntervalSince1970
                 updated.durationSeconds = totalDurationSeconds
                 updated.count = resolvedCount
                 updated.calories = calories
@@ -355,7 +354,7 @@ struct RecordEditSheet: View {
             onSaved?()
             dismiss()
         } catch {
-            errorMessage = (error as NSError).friendlyAuthMessage
+            errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 }

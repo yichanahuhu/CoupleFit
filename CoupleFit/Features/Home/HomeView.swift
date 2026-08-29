@@ -56,7 +56,7 @@ struct HomeView: View {
                 }
                 .refreshable {
                     await appState.refreshDayBoundaryIfNeeded()
-                    await appState.startListening()
+                    await appState.refreshAll()
                 }
                 .onAppear {
                     appState.refreshDayBoundaryIfNeeded()

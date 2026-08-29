@@ -1,5 +1,3 @@
-import AuthenticationServices
-import FirebaseAuth
 import SwiftUI
 import UIKit
 
@@ -50,7 +48,6 @@ struct LoginView: View {
                 VStack(spacing: 24) {
                     header
                     form
-                    appleSignInSection
                     slogan
                 }
                 .readableWidth()
@@ -180,38 +177,6 @@ struct LoginView: View {
         }
     }
 
-    private var appleSignInSection: some View {
-        VStack(spacing: 12) {
-            Text("或使用 Apple 账号继续")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-
-            // SignInWithAppleButton 只作为视觉与合规入口，真实的授权流程由
-            // AppleSignInCoordinator 发起（需要自定义 nonce 才能换 Firebase credential）
-            ZStack {
-                SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = [.fullName, .email]
-                } onCompletion: { _ in
-                    // 该回调不参与登录流程，仅满足 SignInWithAppleButton 的初始化要求
-                }
-                .signInWithAppleButtonStyle(.black)
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .allowsHitTesting(!isSubmitting)
-
-                Color.clear
-                    .contentShape(RoundedRectangle(cornerRadius: 12))
-                    .onTapGesture {
-                        Task { await signInWithApple() }
-                    }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .opacity(isSubmitting ? 0.5 : 1)
-        }
-    }
-
     private var slogan: some View {
         Text("每天 20 分钟，和 TA 一起变得更健康")
             .font(.caption)
@@ -292,7 +257,7 @@ struct LoginView: View {
                                              displayName: trimmedNickname)
             }
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -312,29 +277,7 @@ struct LoginView: View {
             try await authService.sendPasswordReset(email: trimmedEmail)
             toastMessage = "重置密码邮件已发送，请查收"
         } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
-        }
-    }
-
-    @MainActor
-    private func signInWithApple() async {
-        guard !isSubmitting else { return }
-        appState.errorMessage = nil
-        toastMessage = nil
-
-        guard let anchor = Self.keyWindow else {
-            appState.errorMessage = "无法获取当前窗口，请重试"
-            return
-        }
-
-        isSubmitting = true
-        defer { isSubmitting = false }
-
-        do {
-            let credential = try await AppleSignInCoordinator.shared.signIn(presentationAnchor: anchor)
-            try await authService.signInWithApple(credential: credential)
-        } catch {
-            appState.errorMessage = (error as NSError).friendlyAuthMessage
+            appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 

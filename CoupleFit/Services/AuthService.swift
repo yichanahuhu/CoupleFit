@@ -1,147 +1,121 @@
-import FirebaseAuth
-import FirebaseCore
-import FirebaseFirestore
-import FirebaseMessaging
-import UIKit
+import Foundation
 
-// MARK: - 认证服务
+// MARK: - 当前登录用户
 
+struct AuthUser {
+    let uid: String
+    let email: String
+    let displayName: String
+}
+
+// MARK: - 认证服务（LeanCloud 邮箱密码）
+
+/// 注册/登录/登出/密码重置全部走 LeanCloud REST。
+/// 会话 token 持久化到 UserDefaults，启动时静默恢复（不联网校验，
+/// 失效后下次请求自然返回 401 并由上层引导重新登录）。
 @MainActor
 final class AuthService: ObservableObject {
 
     static let shared = AuthService()
 
-    /// 当前登录用户；nil 表示未登录
-    @Published private(set) var currentUser: FirebaseAuth.User?
+    @Published private(set) var currentUser: AuthUser?
 
-    private var listenerHandle: AuthStateDidChangeListenerHandle?
-    private var isStarted = false
+    private let client = LeanCloudClient.shared
+    private let sessionKey = "couplefit_lc_session"
 
-    /// 注意：构造器中**不能**触碰 `Auth.auth()`。
-    /// AppState / RootView 的属性初始化会早于 `FirebaseApp.configure()`，
-    /// 此时调用 `Auth.auth()` 会直接崩溃，因此真正的初始化推迟到 `start()`。
-    private init() {}
-
-    /// 在 `FirebaseApp.configure()` 之后调用，幂等。
-    func start() {
-        guard !isStarted, FirebaseApp.app() != nil else { return }
-        isStarted = true
-        currentUser = Auth.auth().currentUser
-        listenerHandle = Auth.auth().addStateDidChangeListener { [weak self] _, user in
-            Task { @MainActor in
-                self?.currentUser = user
-            }
-        }
-    }
-
-    deinit {
-        if let listenerHandle {
-            Auth.auth().removeStateDidChangeListener(listenerHandle)
-        }
+    private init() {
+        restoreSession()
     }
 
     var currentUID: String? { currentUser?.uid }
-
     var isSignedIn: Bool { currentUser != nil }
 
-    // MARK: 邮箱注册
-
-    @discardableResult
-    func signUp(email: String, password: String, displayName: String) async throws -> FirebaseAuth.User {
-        let result = try await Auth.auth().createUser(withEmail: email, password: password)
-        let changeRequest = result.user.createProfileChangeRequest()
-        changeRequest.displayName = displayName
-        try await changeRequest.commitChanges()
-        return result.user
+    /// 幂等；实际恢复已在 init 完成，这里保证 client.sessionToken 与内存状态一致
+    func start() {
+        // no-op：会话已在 init 中恢复
     }
 
-    // MARK: 邮箱登录
+    // MARK: 注册
 
     @discardableResult
-    func signIn(email: String, password: String) async throws -> FirebaseAuth.User {
-        try await Auth.auth().signIn(withEmail: email, password: password).user
+    func signUp(email: String, password: String, displayName: String) async throws -> AuthUser {
+        let body: [String: Any] = [
+            "username": email,
+            "password": password,
+            "email": email,
+            "displayName": displayName
+        ]
+        let json = try await client.requestJSON(path: "/users", method: "POST", body: body)
+        guard let dict = json as? [String: Any],
+              let uid = dict["objectId"] as? String,
+              let session = dict["sessionToken"] as? String else {
+            throw AppError.unknown("注册失败，请重试")
+        }
+        let user = AuthUser(uid: uid, email: email, displayName: displayName)
+        persistSession(user: user, session: session)
+        currentUser = user
+        return user
     }
 
-    // MARK: Sign in with Apple
+    // MARK: 登录
 
-    /// 由 AppleSignInCoordinator 拿到 credential 后调用
     @discardableResult
-    func signInWithApple(credential: AuthCredential) async throws -> FirebaseAuth.User {
-        try await Auth.auth().signIn(with: credential).user
+    func signIn(email: String, password: String) async throws -> AuthUser {
+        let body: [String: Any] = [
+            "username": email,
+            "password": password
+        ]
+        let json = try await client.requestJSON(path: "/login", method: "POST", body: body)
+        guard let dict = json as? [String: Any],
+              let uid = dict["objectId"] as? String,
+              let session = dict["sessionToken"] as? String else {
+            throw AppError.unknown("登录失败，请重试")
+        }
+        let name = (dict["displayName"] as? String) ?? ""
+        let mail = (dict["email"] as? String) ?? email
+        let user = AuthUser(uid: uid, email: mail, displayName: name)
+        persistSession(user: user, session: session)
+        currentUser = user
+        return user
     }
 
     // MARK: 密码重置
 
     func sendPasswordReset(email: String) async throws {
-        try await Auth.auth().sendPasswordReset(withEmail: email)
+        let body: [String: Any] = ["email": email]
+        _ = try await client.requestJSON(path: "/requestPasswordReset", method: "POST", body: body)
     }
 
     // MARK: 退出登录
 
     func signOut() throws {
-        // 退出前移除「本设备」的 token。
-        // 注意：fcmTokens 是数组，一个人的账号可能同时登录 iPhone 和 iPad，
-        // 因此只能移除当前设备这一个，不能整个删掉，否则会连累其他设备收不到推送。
-        if let uid = currentUID {
-            Task.detached(priority: .utility) {
-                guard let token = try? await Messaging.messaging().token() else { return }
-                try? await FirestoreService.shared.removeFCMToken(uid: uid, token: token)
-            }
+        if client.sessionToken != nil {
+            _ = try? await client.requestJSON(path: "/logout", method: "DELETE")
         }
-        try Auth.auth().signOut()
+        client.sessionToken = nil
+        currentUser = nil
+        UserDefaults.standard.removeObject(forKey: sessionKey)
     }
-}
 
-// MARK: - Firebase 错误本地化
+    // MARK: - 会话持久化
 
-/// Firebase Auth 错误码。
-///
-/// 为什么不直接用 SDK 的 `AuthErrorCode`：
-/// Firebase 11 起 `AuthErrorCode.Code` 这个嵌套类型被移除，`AuthErrorCode` 改为
-/// 带 `code: Int` 的结构体。各版本 API 形态不一致，直接用会在升级 SDK 时编译失败。
-/// 这里自行维护一份错误码到中文文案的映射，只依赖稳定的数值，与 SDK 版本解耦。
-private enum FirebaseAuthCode: Int {
-    case invalidCredential = 17004
-    case userDisabled = 17005
-    case operationNotAllowed = 17006
-    case emailAlreadyInUse = 17007
-    case invalidEmail = 17008
-    case wrongPassword = 17009
-    case tooManyRequests = 17010
-    case userNotFound = 17011
-    case userTokenExpired = 17017
-    case networkError = 17020
-    case weakPassword = 17026
-
-    var message: String {
-        switch self {
-        case .emailAlreadyInUse: return "该邮箱已注册，请直接登录"
-        case .invalidEmail: return "邮箱格式不正确"
-        case .weakPassword: return "密码强度不足，至少需要 6 位"
-        case .wrongPassword: return "密码错误，请重试"
-        case .userNotFound: return "该邮箱尚未注册"
-        case .userDisabled: return "该账号已被禁用"
-        case .tooManyRequests: return "操作过于频繁，请稍后再试"
-        case .networkError: return "网络不可用，请检查网络连接"
-        case .userTokenExpired: return "登录状态已过期，请重新登录"
-        case .invalidCredential: return "邮箱或密码不正确"
-        case .operationNotAllowed: return "该登录方式未开启，请检查 Firebase 控制台配置"
-        }
+    private func persistSession(user: AuthUser, session: String) {
+        client.sessionToken = session
+        let payload: [String: String] = [
+            "uid": user.uid,
+            "email": user.email,
+            "displayName": user.displayName,
+            "sessionToken": session
+        ]
+        UserDefaults.standard.set(payload, forKey: sessionKey)
     }
-}
 
-extension NSError {
-    /// 把 Firebase Auth / Firestore 的错误转成中文提示
-    var friendlyAuthMessage: String {
-        if let authCode = FirebaseAuthCode(rawValue: code) {
-            return authCode.message
-        }
-        if code == FirestoreErrorCode.unavailable.rawValue {
-            return AppError.networkUnavailable.errorDescription ?? "网络不可用"
-        }
-        if code == FirestoreErrorCode.permissionDenied.rawValue {
-            return "没有权限执行该操作，请检查 Firestore 安全规则"
-        }
-        return localizedDescription
+    private func restoreSession() {
+        guard let payload = UserDefaults.standard.dictionary(forKey: sessionKey) as? [String: String],
+              let uid = payload["uid"], let session = payload["sessionToken"] else { return }
+        client.sessionToken = session
+        currentUser = AuthUser(uid: uid,
+                               email: payload["email"] ?? "",
+                               displayName: payload["displayName"] ?? "")
     }
 }

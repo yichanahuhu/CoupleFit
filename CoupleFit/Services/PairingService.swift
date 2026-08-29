@@ -1,4 +1,3 @@
-import FirebaseFirestore
 import Foundation
 
 // MARK: - 配对服务
@@ -19,7 +18,7 @@ struct PairingService {
                 let pairCode = PairCode(
                     code: code,
                     creatorUserId: creatorUserId,
-                    expiresAt: Timestamp(date: Date().addingTimeInterval(Constants.pairCodeTTL))
+                    expiresAt: Date().addingTimeInterval(Constants.pairCodeTTL).timeIntervalSince1970
                 )
                 try await firestore.createPairCode(pairCode)
                 return pairCode
@@ -51,7 +50,7 @@ struct PairingService {
         let partnerUID = pairCode.creatorUserId
 
         // 若双方已互相绑定，幂等返回
-        if let me = try await firestore.fetchUser(currentUID), me.partnerId == partnerUID {
+        if let me = try await firestore.fetchUser(ownerId: currentUID), me.partnerId == partnerUID {
             try? await firestore.deletePairCode(trimmed)
             throw AppError.alreadyPaired
         }

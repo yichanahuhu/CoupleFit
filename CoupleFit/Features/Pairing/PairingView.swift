@@ -343,9 +343,9 @@ struct PairingView: View {
             let pairCode = try await PairingService().generateCode(for: uid)
             generatedCode = pairCode
             isCodeExpired = pairCode.isExpired
-            remainingSeconds = max(0, Int(pairCode.expiresAt.dateValue().timeIntervalSinceNow))
+            remainingSeconds = max(0, Int(Date(timeIntervalSince1970: pairCode.expiresAt).timeIntervalSinceNow))
         } catch {
-            errorMessage = (error as NSError).friendlyAuthMessage
+            errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -370,14 +370,14 @@ struct PairingView: View {
             _ = try await PairingService().bind(using: code, currentUID: uid)
             inputCode = ""
             generatedCode = nil
-            appState.startListening()
+            appState.refreshAll()
             toastMessage = "配对成功 💗"
         } catch {
             // 已绑定彼此：服务端删除配对码后抛出，视为成功
             if let appError = error as? AppError, case .alreadyPaired = appError {
                 inputCode = ""
                 generatedCode = nil
-                appState.startListening()
+                appState.refreshAll()
                 toastMessage = appError.errorDescription
                 return
             }
@@ -416,7 +416,7 @@ struct PairingView: View {
 
     private func refreshRemainingTime() {
         guard let pairCode = generatedCode else { return }
-        let remaining = Int(pairCode.expiresAt.dateValue().timeIntervalSinceNow)
+        let remaining = Int(Date(timeIntervalSince1970: pairCode.expiresAt).timeIntervalSinceNow)
         remainingSeconds = max(0, remaining)
         isCodeExpired = remaining <= 0
     }
@@ -436,7 +436,7 @@ struct PairingView: View {
         if nsError.domain == "CoupleFit" {
             return nsError.localizedDescription
         }
-        return nsError.friendlyAuthMessage
+        return (nsError as? AppError)?.errorDescription ?? nsError.localizedDescription
     }
 }
 
