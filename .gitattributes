@@ -1,0 +1,23 @@
+# Shell 脚本必须保持 LF。
+# 若被转成 CRLF，Git Bash 执行时会报：
+#   bash: ./push.sh: /usr/bin/env: bad interpreter: No such file or directory
+*.sh text eol=lf
+
+# 源码统一 LF，避免不同平台 checkout 产生无意义 diff
+*.swift text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.plist text eol=lf
+*.entitlements text eol=lf
+
+# 二进制文件禁止做任何换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ipa binary
+*.p8 binary
+*.p12 binary
+*.mobileprovision binary
