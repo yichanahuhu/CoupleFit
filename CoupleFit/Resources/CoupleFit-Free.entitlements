@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  免费 Apple ID（Personal Team）专用 entitlements。
+
+  与 CoupleFit.entitlements 的区别：移除了两项免费账号不支持的 capability。
+  保留它们会导致签名直接失败，报错形如：
+    "Provisioning profile doesn't support the Push Notifications capability"
+    "Provisioning profile doesn't include the com.apple.developer.applesignin entitlement"
+  结果是 App 根本装不上，而不只是功能缺失。
+
+  已移除：
+    - aps-environment        → 远程推送（FCM）。免费账号不支持 Push Notifications。
+    - com.apple.developer.applesignin → Sign in with Apple。免费账号不支持。
+
+  因此使用本文件时：
+    · 「提醒对方」不可用（MessagingService 会自动降级为本地模拟通知）
+    · 登录方式只剩邮箱，LoginView 中的 Apple 登录按钮点了会报错，建议忽略
+    · 本地每日提醒不受影响，正常工作
+
+  项目默认使用本文件。若你后续购买了 Apple Developer Program（$99/年），
+  把 project.yml 中 targets.CoupleFit.entitlements.path 改成
+  CoupleFit/Resources/CoupleFit.entitlements 即可恢复全部能力。
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

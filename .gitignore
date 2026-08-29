@@ -1,0 +1,53 @@
+# Xcode
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+
+# 由 XcodeGen 生成，不入库
+CoupleFit.xcodeproj/
+CoupleFit.xcworkspace/
+
+# Swift Package Manager
+.build/
+Packages/
+.swiftpm/
+*.xcodeproj/project.xcworkspace/
+
+# CocoaPods（本项目不使用，防止误装）
+Pods/
+
+# Node（Cloud Functions）
+firebase/functions/node_modules/
+firebase/.firebase/
+firebase/firebase-debug.log
+firebase/firestore-debug.log
+firebase/ui-debug.log
+
+# GoogleService-Info.plist 的「占位版本」故意入库（不含任何密钥），
+# 否则 GitHub Actions 会因为缺少这个 Bundle 资源而编译失败。
+#
+# 你在本地替换成真实文件后，执行下面这条命令避免误提交密钥：
+#   git update-index --assume-unchanged CoupleFit/CoupleFit/Resources/GoogleService-Info.plist
+# 恢复跟踪：
+#   git update-index --no-assume-unchanged CoupleFit/CoupleFit/Resources/GoogleService-Info.plist
+
+# Firebase 服务账号密钥
+*serviceAccountKey*.json
+.firebase/
+
+# 系统
+.DS_Store
+Thumbs.db
+*.swp

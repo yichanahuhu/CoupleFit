@@ -1,0 +1,110 @@
+rules_version = '2';
+
+// CoupleFit —— Firestore 安全规则
+//
+// 核心原则：用户只能读写「自己」和「自己的情侣」的数据。
+// 情侣关系通过 users/{uid}.partnerId 建立，双方必然互相持有对方的 uid。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // MARK: 辅助函数
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    /// 读取某用户的 partnerId；用户文档不存在时返回 null
+    function partnerIdOf(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId))
+        ? get(/databases/$(database)/documents/users/$(userId)).data.partnerId
+        : null;
+    }
+
+    function isPartnerOf(me, other) {
+      return partnerIdOf(me) == other;
+    }
+
+    function isSelfOrPartner(userId) {
+      return isSelf(userId)
+        || (isSignedIn() && isPartnerOf(request.auth.uid, userId));
+    }
+
+    /// 校验 list 查询必须带 userId 过滤，且只允许查自己或情侣
+    function isQueryForSelfOrPartner() {
+      return isSignedIn()
+        && request.query.filters
+             .filter(f => f.fieldPath == "userId"
+                       && (f.value == request.auth.uid
+                           || f.value == partnerIdOf(request.auth.uid)))
+             .size() > 0;
+    }
+
+    // MARK: users
+
+    match /users/{userId} {
+      allow get: if isSelfOrPartner(userId);
+      // 只允许查自己（情侣的资料走 get 单独读取，避免列出全库用户）
+      allow list: if false;
+      allow create: if isSelf(userId);
+      // 只允许改自己的昵称、运动类型、FCM token；partnerId 由绑定流程写入
+      allow update: if isSelf(userId);
+      allow delete: if false;
+    }
+
+    // MARK: pairCodes
+
+    match /pairCodes/{code} {
+      // 任何登录用户都能读码去尝试绑定（码本身不含隐私，且 10 分钟过期）
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.creatorUserId == request.auth.uid
+                    && request.resource.data.keys().hasOnly(['code', 'creatorUserId', 'expiresAt']);
+      allow update, delete: if isSignedIn() && resource.data.creatorUserId == request.auth.uid;
+    }
+
+    // MARK: exerciseRecords
+
+    match /exerciseRecords/{recordId} {
+      allow get: if isSelfOrPartner(resource.data.userId);
+      allow list: if isQueryForSelfOrPartner();
+      allow create: if isSignedIn()
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.durationSeconds > 0;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // MARK: goals
+
+    match /goals/{userId} {
+      allow get: if isSelfOrPartner(userId);
+      allow list: if false;
+      allow create, update: if isSelf(userId);
+      allow delete: if false;
+    }
+
+    // MARK: likes
+
+    match /likes/{likeId} {
+      allow get: if isSignedIn()
+                 && (resource.data.fromUserId == request.auth.uid
+                     || resource.data.toUserId == request.auth.uid);
+      allow list: if isSignedIn()
+                  && request.query.filters
+                       .filter(f => f.fieldPath == "toUserId"
+                                 && (f.value == request.auth.uid
+                                     || f.value == partnerIdOf(request.auth.uid)))
+                       .size() > 0;
+      allow create: if isSignedIn()
+                    && request.resource.data.fromUserId == request.auth.uid
+                    && request.resource.data.dateString is string;
+      // 只允许撤回自己发出的赞
+      allow delete: if isSignedIn() && resource.data.fromUserId == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}
