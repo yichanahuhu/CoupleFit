@@ -18,7 +18,8 @@ final class FirestoreService: @unchecked Sendable {
         db = Firestore.firestore()
         // 离线持久化：断网时仍可读取缓存，写入会在恢复网络后自动提交
         let settings = FirestoreSettings()
-        settings.cacheSettings = PersistentCacheSettings(sizeBytes: 100 * 1024 * 1024)
+        // sizeBytes 的参数类型是 NSNumber，Swift 的 Int 不会自动桥接，必须显式包装
+        settings.cacheSettings = PersistentCacheSettings(sizeBytes: NSNumber(value: 100 * 1024 * 1024))
         db.settings = settings
     }
 
@@ -143,12 +144,13 @@ final class FirestoreService: @unchecked Sendable {
 
     /// 解绑：清除双方的 partnerId
     func unbindPartners(myUID: String, partnerUID: String) async throws {
-        try await db.runBatch { batch in
-            batch.updateData(["partnerId": FieldValue.delete()],
-                             forDocument: self.db.collection(Constants.colUsers).document(myUID))
-            batch.updateData(["partnerId": FieldValue.delete()],
-                             forDocument: self.db.collection(Constants.colUsers).document(partnerUID))
-        }
+        // 注意：runBatch 是 Android 的 API，iOS 上是 batch() + commit()
+        let batch = db.batch()
+        batch.updateData(["partnerId": FieldValue.delete()],
+                         forDocument: db.collection(Constants.colUsers).document(myUID))
+        batch.updateData(["partnerId": FieldValue.delete()],
+                         forDocument: db.collection(Constants.colUsers).document(partnerUID))
+        try await batch.commit()
     }
 
     // MARK: - exerciseRecords
