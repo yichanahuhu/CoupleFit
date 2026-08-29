@@ -32,7 +32,7 @@ concurrency:
 jobs:
   build:
     name: 编译验证 (iOS Simulator)
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: 检出代码
@@ -46,6 +46,16 @@ jobs:
           swift --version
           echo "--- 可用 iOS 模拟器 SDK ---"
           xcodebuild -showsdks | grep -i "ios" || true
+
+      # 关键：brew 装的 XcodeGen 是最新版，生成的工程格式较新（objectVersion 77+），
+      # 需要 Xcode 16 才能打开。runner 默认可能选中旧版 Xcode，这里显式切到最新的。
+      # 曾踩坑：macos-14 默认 Xcode 15.4 直接报
+      #   "project is in a future Xcode project file format (77)"
+      - name: 选择最新 Xcode
+        run: |
+          ls -d /Applications/Xcode_*.app 2>/dev/null || true
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          xcodebuild -version
 
       - name: 安装 XcodeGen
         run: |
