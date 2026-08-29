@@ -88,7 +88,7 @@ final class AuthService: ObservableObject {
 
     // MARK: 退出登录
 
-    func signOut() throws {
+    func signOut() async throws {
         if client.sessionToken != nil {
             _ = try? await client.requestJSON(path: "/logout", method: "DELETE")
         }

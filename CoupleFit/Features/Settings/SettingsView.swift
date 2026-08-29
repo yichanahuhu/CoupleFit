@@ -65,7 +65,7 @@ struct SettingsView: View {
             }
             .confirmationDialog("退出登录", isPresented: $showSignOutConfirm) {
                 Button("退出登录", role: .destructive) {
-                    signOut()
+                    Task { await signOut() }
                 }
                 Button("取消", role: .cancel) {}
             } message: {
@@ -433,9 +433,9 @@ struct SettingsView: View {
     }
 
     @MainActor
-    private func signOut() {
+    private func signOut() async {
         do {
-            try AuthService.shared.signOut()
+            try await AuthService.shared.signOut()
             appState.reset()
         } catch {
             appState.errorMessage = (error as? AppError)?.errorDescription ?? error.localizedDescription

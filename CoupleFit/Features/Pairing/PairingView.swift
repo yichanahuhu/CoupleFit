@@ -405,7 +405,7 @@ struct PairingView: View {
     private func signOut() async {
         isSigningOut = true
         defer { isSigningOut = false }
-        try? AuthService.shared.signOut()
+        try? await AuthService.shared.signOut()
     }
 
     // MARK: 辅助
