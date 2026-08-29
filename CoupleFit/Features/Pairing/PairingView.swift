@@ -370,14 +370,14 @@ struct PairingView: View {
             _ = try await PairingService().bind(using: code, currentUID: uid)
             inputCode = ""
             generatedCode = nil
-            appState.refreshAll()
+            await appState.refreshAll()
             toastMessage = "配对成功 💗"
         } catch {
             // 已绑定彼此：服务端删除配对码后抛出，视为成功
             if let appError = error as? AppError, case .alreadyPaired = appError {
                 inputCode = ""
                 generatedCode = nil
-                appState.refreshAll()
+                await appState.refreshAll()
                 toastMessage = appError.errorDescription
                 return
             }

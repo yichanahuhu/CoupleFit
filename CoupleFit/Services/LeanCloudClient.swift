@@ -82,7 +82,10 @@ final class LeanCloudClient {
 
     /// 发送请求，返回解析后的 JSON（字典或数组）。非 2xx 时抛出映射后的错误。
     func requestJSON(path: String, method: String = "GET", query: [URLQueryItem]? = nil, body: [String: Any]? = nil) async throws -> Any {
-        let bodyData = body.map { try JSONSerialization.data(withJSONObject: $0) }
+        var bodyData: Data? = nil
+        if let body {
+            bodyData = try? JSONSerialization.data(withJSONObject: body)
+        }
         let req = makeRequest(path: path, method: method, query: query, body: bodyData)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw AppError.unknown("网络响应异常，请重试") }
