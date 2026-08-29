@@ -50,8 +50,9 @@ targets:
         product: FirebaseAuth
       - package: Firebase
         product: FirebaseFirestore
-      - package: Firebase
-        product: FirebaseFirestoreSwift
+      # 注意：Firebase 11.x 起 Firestore 的 Swift Codable 扩展（@DocumentID 等）
+      # 已并入 FirebaseFirestore，不再有独立的 FirebaseFirestoreSwift product。
+      # 加上会报：Missing package product 'FirebaseFirestoreSwift'
       - package: Firebase
         product: FirebaseMessaging
     info:
