@@ -94,8 +94,26 @@ final class AuthService: ObservableObject {
 
 // MARK: - Firebase 错误本地化
 
-extension AuthErrorCode.Code {
-    var localizedMessage: String {
+/// Firebase Auth 错误码。
+///
+/// 为什么不直接用 SDK 的 `AuthErrorCode`：
+/// Firebase 11 起 `AuthErrorCode.Code` 这个嵌套类型被移除，`AuthErrorCode` 改为
+/// 带 `code: Int` 的结构体。各版本 API 形态不一致，直接用会在升级 SDK 时编译失败。
+/// 这里自行维护一份错误码到中文文案的映射，只依赖稳定的数值，与 SDK 版本解耦。
+private enum FirebaseAuthCode: Int {
+    case invalidCredential = 17004
+    case userDisabled = 17005
+    case operationNotAllowed = 17006
+    case emailAlreadyInUse = 17007
+    case invalidEmail = 17008
+    case wrongPassword = 17009
+    case tooManyRequests = 17010
+    case userNotFound = 17011
+    case userTokenExpired = 17017
+    case networkError = 17020
+    case weakPassword = 17026
+
+    var message: String {
         switch self {
         case .emailAlreadyInUse: return "该邮箱已注册，请直接登录"
         case .invalidEmail: return "邮箱格式不正确"
@@ -108,7 +126,6 @@ extension AuthErrorCode.Code {
         case .userTokenExpired: return "登录状态已过期，请重新登录"
         case .invalidCredential: return "邮箱或密码不正确"
         case .operationNotAllowed: return "该登录方式未开启，请检查 Firebase 控制台配置"
-        default: return "操作失败，请稍后重试"
         }
     }
 }
@@ -116,8 +133,8 @@ extension AuthErrorCode.Code {
 extension NSError {
     /// 把 Firebase Auth / Firestore 的错误转成中文提示
     var friendlyAuthMessage: String {
-        if let code = AuthErrorCode.Code(rawValue: code) {
-            return code.localizedMessage
+        if let authCode = FirebaseAuthCode(rawValue: code) {
+            return authCode.message
         }
         if code == FirestoreErrorCode.unavailable.rawValue {
             return AppError.networkUnavailable.errorDescription ?? "网络不可用"
